@@ -1,7 +1,14 @@
 #Imports
 import customtkinter as ct
 from customtkinter import DrawEngine
+from itertools import batched
 import time
+import threading
+from network import Network
+import keyboard
+from pywinauto import Application
+import pygetwindow as gw
+import pyautogui
 
 #Initializations
 ct.set_appearance_mode("dark")
@@ -23,7 +30,7 @@ class App(ct.CTk):
         self.main_transparent = "gray32"
         self.configure(fg_color=self.main_transparent)
         self.attributes("-transparentcolor",self.main_transparent)
-        self.background_transparency = 0.65
+        self.background_transparency = 0.85
         self.attributes('-alpha',self.background_transparency)
         self.attributes("-topmost", True)
         self.main_frame = ct.CTkFrame(
@@ -65,6 +72,8 @@ class App(ct.CTk):
             "alter_border" : self.alter_border,
             "exit" : self.destroy,
             "set_user": self.set_user,
+            "change_transparency": self.change_transparency,
+            "set_color": self.set_color,
         }
 
         #Textbox
@@ -75,8 +84,28 @@ class App(ct.CTk):
 
         #Messagebox
         self.messages_window()
-        self.message_box.tag_config("red", foreground="red")
+        
+        #Connect to host and receive text
+        self.net = Network()
+        threading.Thread(target=self.receive_texts).start()
 
+        """Define Colors"""
+        self.colors_list = {"black": "#1B1212", 
+                           "white":"#FFF8DC",
+                           "yellow":"#ffe37a",
+                           "green": "#43EE51",
+                           "red": "#FF3131",
+                           "blue":"#1F51FF",
+                           "brown": "#7A4620",
+                           "orange": "#CC5500",
+                           "pink": "#E89EB8",
+                           "purple": "#5C3D64",
+                           "gray": "#aaaaaa"}
+        self.valid_colors = list(self.colors_list)
+        self.defined = False
+        self.define_colors()
+
+        keyboard.on_press_key("'", self.focus_chat,suppress=True)
 
         #Always keep the App on screen
         for window in [self, self.ui_layer]:
@@ -87,17 +116,76 @@ class App(ct.CTk):
         
     
     #Commands
-    def alter_border(self):
+    def command_logs(self, message):
+        self.message_box.configure(state="normal")
+        self.message_box.insert("end","\n"+message,"#aaaaaa_tag")
+        self.message_box.see("end")
+        self.message_box.configure(state="disabled")
+
+    def alter_border(self, extra = None):
         self.borders_visible = False if self.borders_visible else True
         self.overrideredirect(self.borders_visible)
+        self.command_logs("Successfully changed border preview!")
 
     def set_user(self, username=None):
         if username == None:
             pass
         self.user = " ".join(username)
+        self.command_logs(f"Successfully changed your name to {self.user}")
+    
+    def set_color(self, color=None):
+        if color == None:
+            return
+        
+        elif color[0].lower() not in self.valid_colors:
+            return
+
+        self.color=color[0].lower()
+        self.command_logs(f"Successfully changed your name color to {self.color}")
+
+    #Receive messages via network
+    def receive_texts(self):
+        while True:
+            try:
+                data = self.net.client.recv(2048)
+                if not data: break
+                message = data.decode("utf-8")
+                if len(message.split(":")) == 1:
+                    self.message_box.configure(state="normal")
+                    self.message_box.insert("end",text="\n"+message, tags="#aaaaaa_tag")
+                    self.message_box.configure(state="disabled")
+                else:
+                    self.handle_message(message)
+            except: 
+                break
+        self.message_box.configure(state="normal")
+        self.message_box.insert("end",text="\nYou've been disconnected from the server", tags="#aaaaaa_tag")
+        self.message_box.configure(state="disabled")
+
 
 
     #App
+    def focus_chat(self, extra=None):
+        win = gw.getWindowsWithTitle('LC Chat')[0]
+        app = Application().connect(handle=win._hWnd)
+        app.top_window().set_focus()
+        self.textbox.focus_set()
+        keyboard.unhook_key("'")
+
+    def define_colors(self):
+        if self.defined:
+            return
+        self.defined = True
+        for color in self.valid_colors: 
+            self.message_box.tag_config(f"{color}_tag", foreground=f"{color}")
+            msg_color = self.colors_list[color]
+            self.message_box.tag_config(f"{msg_color}_tag", foreground=f"{msg_color}")
+
+    def change_transparency(self, timer = None):
+        if timer == None:
+            return
+        self.transparency_after = int(timer[0])
+       
     def alter_transparency(self):
         time2 =  time.perf_counter()
         if time2 - self.time1>self.transparency_after:
@@ -114,10 +202,10 @@ class App(ct.CTk):
 
     def focusedout(self,event=None):
         if self.transparency_countingID == None:
-            self.transparency_counting = self.after(5000,self.alter_transparency)
+            self.transparency_counting = self.after(self.transparency_after*1000,self.alter_transparency)
         else:
             self.after_cancel(self.transparency_countingID)
-            self.transparency_counting = self.after(5000,self.alter_transparency)
+            self.transparency_counting = self.after(self.transparency_after*1000,self.alter_transparency)
 
     def keep_on_top(self):
         self.lift()
@@ -158,52 +246,122 @@ class App(ct.CTk):
         self.message_box.configure(state="disabled")    
         self.message_box.place(x=0,y=0)
     
-    def send_message(self, message):
-        self.message_box.configure(state="normal")
-        self.message_box.insert("end",f"\n{self.user}", "red")
+    def colored_message(self, color_and_message,user, color):
+        self.message_box.insert("end",f"\n{user}", f"{color}_tag")
+        self.message_box.insert("end",": ")
+        
+        if color_and_message == None:
+            return
 
+        for color, message in list(batched(color_and_message, 2)):
+            msg_color = self.colors_list[color]
+            self.message_box.insert("end",f"{message}", f"{msg_color}_tag")
+        self.message_box.see("end")
 
+    def send_message(self, message, user, color):
+        color = self.color if not color else color
+        user = self.user if not user else user
+        self.message_box.insert("end",f"\n{user}", f"{color}_tag")
         self.message_box.insert("end", f": {message}")
-
-        
-
+        self.message_box.see("end")
         self.message_box.configure(state="disabled")
-
-    def run_commands(self,contents):
+    
+    def handle_message(self, message):
         
-        check_command = contents.split(".c ")[1]
-        full_command = check_command.split(" ")
-        command = full_command[0]
+
+        self.message_box.configure(state="normal")
+        user_and_text = message.split(":")
+        user = user_and_text[0]
+        user_color = user_and_text[1]
+        text = "".join(user_and_text[2::])
+
+        colored_text = 0
+
+        if "{" in text:
+            colored_text +=1
+        if "}" in text:
+            colored_text+=1
+        
+        if colored_text != 2:
+            self.send_message(text, user,user_color)
+            return
+        color_and_text = text.split('{')
+        if color_and_text[0]:
+            color_and_text[0] = "white} " + color_and_text[0]
+        else:
+            color_and_text.remove("")
+                
+        #Separate Color and text
+        assigned_color_list = []
+        index = -1
+        for msg in color_and_text:
+            separate = msg.split("}")
+            color = separate[0]
+            if color in self.valid_colors:
+                assigned_color_list.append(color)
+                assigned_color_list.append(separate[1])
+                index +=2
+            elif index <= 0:
+                assigned_color_list.append("white")
+                bad_assignment = "{" + msg
+                assigned_color_list.append(bad_assignment)
+            else: 
+                assigned_color_list[index] = assigned_color_list[index]+ "{"+ msg
+        
+        self.colored_message(assigned_color_list, user, user_color)
+                
+                
+        
+        
+
+
+    def run_commands(self,full_command):
+        
+        command = full_command[1]
 
         if command not in self.commands:
             return "break" 
 
-        command_variables = full_command[1::]
-
+        command_variables = full_command[2::]
+        
         if not command_variables:
                 self.commands[command]()
                 return "break"
         self.commands[command](command_variables)
      
     def messages(self,event=None):
+        """
+            Check whether the message is command or actual text 
+        """
+        pyautogui.click()
         contents = self.textbox.get("0.0","end-1c")
+        
 
         if not contents:
             return "break"        
-            
+        
+
         self.textbox.delete("0.0", "end-1c")
         self.chatbox_resize()
-
+        user_and_text = self.user+":"+self.color+":"+contents
         #Check for commands
         length_of_contents = len(contents)
         if length_of_contents < 3:
-            self.send_message(contents)
+            self.handle_message(user_and_text)
+            
+            #Send message to other clients
+            self.net.send_message(user_and_text)
+            
             return "break"
-        
-        if "".join([contents[0],contents[1]]) == ".c":
-            self.run_commands(contents)
+
+        command = contents.split(" ")
+        if command[0] == ".c":
+            self.run_commands(command)
         else:
-            self.send_message(contents)
+            #Send message to other clients
+            self.net.send_message(user_and_text)
+            
+            self.handle_message(user_and_text)
             return "break"
             
 
@@ -235,6 +393,7 @@ class App(ct.CTk):
         return "break"
     
     def add_placeholder(self,event=None):
+        keyboard.on_press_key("'", self.focus_chat,suppress=True)
         self.focusedout()
         if not self.textbox.get("0.0", "end-1c"):
             self.textbox.insert("0.0",self.placeholder)
@@ -272,6 +431,7 @@ class App(ct.CTk):
         self.textbox.insert("0.0",self.placeholder)
         self.textbox.bind("<FocusOut>", self.add_placeholder)
         self.textbox.bind("<FocusIn>",self.remove_placeholder)
+        self.textbox.bind("<KeyPress>",self.focusedin)
 
         
         
